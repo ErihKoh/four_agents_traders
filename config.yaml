@@ -5,16 +5,19 @@ project:
   version: "1.0.0"
 
 mt5:
-  login: 104105009          # Ваш номер рахунку
+  login: 104105009
   password: "0oOo_vKi"
   server: "MetaQuotes-Demo"
+  host: "127.0.0.1"  # Додано
+  port: 5555         # Додано
   path: '/Applications/MetaTrader 5.app/Contents/MacOS/MetaTrader 5'
 
 trading:
   symbol: "EURUSD"
   timeframes: ["M1", "M5"]
-  history_bars: 50000      # Кількість свічок для завантаження
-  risk_per_trade: 0.01     # 1% від депозиту
+  horizon: 20        # Додано (MVP 3)
+  history_bars: 50000
+  risk_per_trade: 0.01
 
 paths:
   data_dir: "./data"
