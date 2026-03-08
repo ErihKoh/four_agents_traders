@@ -1,4 +1,6 @@
-# Всі налаштування (символи, ризики)
+# ==========================================
+# ML Trading Bot - Конфігурація системи
+# ==========================================
 
 project:
   name: "ML_Trading_Bot_v1"
@@ -8,16 +10,31 @@ mt5:
   login: 104105009
   password: "0oOo_vKi"
   server: "MetaQuotes-Demo"
-  host: "127.0.0.1"  # Додано
-  port: 5555         # Додано
+  host: "127.0.0.1"
+  port: 5555
   path: '/Applications/MetaTrader 5.app/Contents/MacOS/MetaTrader 5'
 
 trading:
   symbol: "EURUSD"
   timeframes: ["M1", "M5"]
-  horizon: 20        # Додано (MVP 3)
+  horizon: 20           # Кількість свічок для прогнозу (MVP 3)
   history_bars: 50000
   risk_per_trade: 0.01
+  threshold: 0.58       # Поріг впевненості моделі для входу в угоду
+
+# Налаштування навчання (MVP 4 & 6)
+model:
+  type: "xgboost"
+  n_estimators: 200     # Кількість дерев
+  max_depth: 5          # Глибина дерева
+  learning_rate: 0.03   # Швидкість навчання
+  test_size: 0.2        # 20% даних на тест (Walk-Forward)
+
+# Параметри симулятора (MVP 5)
+backtest:
+  spread: 0.00012       # 10 пунктів (середній для EURUSD)
+  commission: 0.0       # Комісія брокера за лот
+  initial_balance: 1000 # Початковий депозит для розрахунку просадки
 
 paths:
   data_dir: "./data"
