@@ -1,0 +1,22 @@
+# Всі налаштування (символи, ризики)
+
+project:
+  name: "ML_Trading_Bot_v1"
+  version: "1.0.0"
+
+mt5:
+  login: 104105009          # Ваш номер рахунку
+  password: "0oOo_vKi"
+  server: "MetaQuotes-Demo"
+  path: '/Applications/MetaTrader 5.app/Contents/MacOS/MetaTrader 5'
+
+trading:
+  symbol: "EURUSD"
+  timeframes: ["M1", "M5"]
+  history_bars: 50000      # Кількість свічок для завантаження
+  risk_per_trade: 0.01     # 1% від депозиту
+
+paths:
+  data_dir: "./data"
+  log_dir: "./logs"
+  models_dir: "./models"
