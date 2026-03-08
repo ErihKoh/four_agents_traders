@@ -1,73 +1,106 @@
-import MetaTrader5 as mt5
 import pandas as pd
 import logging
+import os
+from io import StringIO
 
 
 class DataPipeline:
-    def __init__(self, symbol="EURUSD", timeframe=mt5.TIMEFRAME_M1):
+    def __init__(self, symbol="EURUSD"):
         self.symbol = symbol
-        self.timeframe = timeframe
         self.logger = logging.getLogger("Bot.DataPipeline")
 
-    def fetch_history(self, count=50000):
-        """Завантаження історичних даних"""
-        self.logger.info(f"Fetching {count} bars for {self.symbol}")
+        # Створюємо папку для даних, якщо її немає
+        if not os.path.exists('data'):
+            os.makedirs('data')
 
-        # Отримуємо катирування
-        rates = mt5.copy_rates_from_pos(self.symbol, self.timeframe, 0, count)
+    def parse_raw_data(self, raw_string):
+        """
+        Перетворює сирий CSV-текст, отриманий через сокет, у DataFrame.
+        """
+        try:
+            if not raw_string or "ERROR" in raw_string:
+                self.logger.error(f"Отримано некоректні дані: {raw_string}")
+                return None
 
-        if rates is None:
-            self.logger.error(f"Failed to get rates: {mt5.last_error()}")
+            # Читаємо рядок як CSV
+            csv_data = StringIO(raw_string)
+            df = pd.read_csv(csv_data)
+
+            # Стандартизуємо назви колонок (до нижнього регістру)
+            df.columns = [col.lower() for col in df.columns]
+
+            # Конвертація часу
+            df['time'] = pd.to_datetime(df['time'])
+
+            # Сортуємо за часом (на випадок, якщо MQL5 видав не по порядку)
+            df = df.sort_values('time').reset_index(drop=True)
+
+            return df
+
+        except Exception as e:
+            self.logger.error(f"Помилка при парсингу CSV: {e}")
             return None
 
-        # Перетворюємо в DataFrame
-        df = pd.DataFrame(rates)
+    def validate_data(self, df):
+        """
+        MVP 1: Валідація даних на цілісність.
+        """
+        if df is None or df.empty:
+            self.logger.error("Датасет порожній. Валідація неможлива.")
+            return None
 
-        # Конвертуємо час у зрозумілий формат
-        df['time'] = pd.to_datetime(df['time'], unit='s')
+        initial_len = len(df)
 
-        # Залишаємо лише потрібні колонки
-        df = df[['time', 'open', 'high', 'low', 'close', 'tick_volume']]
-        df.columns = ['time', 'open', 'high', 'low', 'close', 'volume']
+        # 1. Видалення дублікатів за часом
+        df = df.drop_duplicates(subset=['time'])
 
+        # 2. Видалення порожніх значень (NaN)
+        df = df.dropna()
+
+        # 3. Логування змін
+        if len(df) < initial_len:
+            self.logger.warning(f"Очищення: видалено {initial_len - len(df)} некоректних рядків.")
+
+        # 4. Перевірка на "дірки" в часі (для M1 - 60 секунд)
+        time_diffs = df['time'].diff().dt.total_seconds()
+        gaps = time_diffs[time_diffs > 60]  # Для форексу вихідні не враховуємо як помилку
+        if not gaps.empty:
+            self.logger.info(f"Знайдено {len(gaps)} розривів у часі (це нормально для вихідних або пауз у тиках).")
+
+        self.logger.info(f"Валідація успішна. Отримано свічок: {len(df)}")
         return df
 
-    def validate_data(self, df):
-        """Перевірка цілісності даних (MVP 1 Check)"""
-        if df is None or df.empty:
-            return False, "Dataset is empty"
+    def sync_timeframes(self, df_m1, df_m5):
+        """
+        Об'єднання M1 та M5 таймфреймів (якщо ви передаєте обидва через сокет).
+        """
+        self.logger.info("Синхронізація M1 та M5...")
 
-        # 1. Перевірка на пропуски (NaN)
-        if df.isnull().values.any():
-            self.logger.warning("Found NaN values. Dropping them.")
-            df.dropna(inplace=True)
+        # Додаємо суфікси для M5
+        df_m5 = df_m5.rename(columns={
+            'open': 'open_m5', 'high': 'high_m5',
+            'low': 'low_m5', 'close': 'close_m5', 'vol': 'vol_m5'
+        })
 
-        # 2. Перевірка на дублікати часових міток
-        duplicates = df.duplicated(subset=['time']).sum()
-        if duplicates > 0:
-            self.logger.warning(f"Found {duplicates} duplicate timestamps.")
-            df.drop_duplicates(subset=['time'], inplace=True)
+        # Розумне об'єднання (беремо останню відому M5 свічку для кожної M1)
+        df_combined = pd.merge_asof(
+            df_m1.sort_values('time'),
+            df_m5.sort_values('time'),
+            on='time',
+            direction='backward'
+        )
 
-        # 3. Пошук 'дірок' у часі (Gaps)
-        # Для M1 різниця між свічками має бути рівно 60 секунд
-        time_diff = df['time'].diff().dt.total_seconds()
-        expected_diff = 60 if self.timeframe == mt5.TIMEFRAME_M1 else 300
+        return df_combined
 
-        gaps = time_diff[time_diff > expected_diff]
-        if not gaps.empty:
-            self.logger.warning(f"Detected {len(gaps)} time gaps in history!")
-
-        return True, df
-
-    def save_to_parquet(self, df, filename):
-        """Збереження у форматі Parquet для швидкості"""
-        path = f"./data/{filename}.parquet"
-        df.to_parquet(path, index=False)
-        self.logger.info(f"Dataset saved to {path}")
-
-# Приклад використання в межах MVP 0 фундаменту:
-# pipeline = DataPipeline(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M1)
-# raw_data = pipeline.fetch_history(50000)
-# success, clean_data = pipeline.validate_data(raw_data)
-# if success:
-#     pipeline.save_to_parquet(clean_data, "eurusd_m1_clean")
+    def save_parquet(self, df, suffix=""):
+        """
+        Збереження у формат Parquet (швидкий та компактний).
+        """
+        try:
+            filename = f"data/{self.symbol.replace('.', '')}_{suffix}.parquet"
+            df.to_parquet(filename, index=False)
+            self.logger.info(f"Дані успішно збережено у файл: {filename}")
+            return filename
+        except Exception as e:
+            self.logger.error(f"Помилка при збереженні Parquet: {e}")
+            return None
