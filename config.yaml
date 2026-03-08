@@ -34,6 +34,8 @@ model:
 backtest:
   spread: 0.00012       # 10 пунктів (середній для EURUSD)
   commission: 0.0       # Комісія брокера за лот
+  sl_points: 150        # Аварійний Stop Loss (у пунктах)
+  tp_points: 0
   initial_balance: 1000 # Початковий депозит для розрахунку просадки
 
 paths:
