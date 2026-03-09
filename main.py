@@ -10,29 +10,25 @@ from src.strategy import MLStrategy, VirtualAccountant
 
 
 def setup_logging(config):
-    """Налаштування логування: тех-логи в файл/консоль, сигнали - тільки в файл."""
+    """Налаштування логів: тех-логи та сигнали."""
     log_dir = config['paths']['log_dir']
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # 1. Загальний логгер (Root)
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    root_logger.handlers = []  # Очищення від старих хендлерів
+    root_logger.handlers = []
 
-    # Файл для технічних логів
     fh = logging.FileHandler(f"{log_dir}/bot_core.log")
     fh.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
     root_logger.addHandler(fh)
 
-    # Консоль (чистий вивід)
     ch = logging.StreamHandler()
     ch.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
     root_logger.addHandler(ch)
 
-    # 2. Логгер сигналів (Окремий файл без дублювання в консоль)
     signal_logger = logging.getLogger("Signals")
-    signal_logger.propagate = False  # Не пускати лог в консоль двічі
+    signal_logger.propagate = False
     sig_handler = logging.FileHandler(f"{log_dir}/signals.log")
     sig_handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
     signal_logger.addHandler(sig_handler)
@@ -42,17 +38,14 @@ def setup_logging(config):
 
 
 def main():
-    # 1. Завантаження конфігурації
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    # 2. Налаштування логів
     sig_log = setup_logging(config)
     logger = logging.getLogger("Bot.Live")
 
-    # 3. Ініціалізація компонентів
     try:
-        logger.info("Завантаження моделі XGBoost та компонентів...")
+        logger.info("Завантаження моделі та ініціалізація...")
         model = joblib.load(f"{config['paths']['models_dir']}/xgb_baseline.pkl")
 
         conn = MT5Connector(config)
@@ -60,54 +53,64 @@ def main():
         processor = FeatureEngineer(config)
         accountant = VirtualAccountant(config)
 
-        logger.info(f"🤖 Бот готовий. Баланс: ${accountant.balance}. Поріг: {config['trading']['threshold']}")
+        threshold = config['trading'].get('threshold', 0.58)
+        logger.info(f"🤖 Бот готовий. Поріг: {threshold} | Баланс: ${accountant.balance}")
     except Exception as e:
-        logger.error(f"Критична помилка ініціалізації: {e}")
+        logger.error(f"Помилка ініціалізації: {e}")
         return
 
-    # 4. Нескінченний цикл Live-торгівлі
-    logger.info("📡 Очікування пакетів даних від MetaTrader 5...")
+    logger.info("📡 Чекаю на дані від MT5...")
+
     while True:
         try:
-            # Чекаємо дані від MT5
+            # 1. Отримання пакету даних
             raw_data = conn.listen_for_data()
             if not raw_data:
                 continue
 
-            # Парсинг та синхронізація (M1 + M5)
-            df_synced = loader.parse_combined_data(raw_data)
+            # 2. Парсинг (тут ще є 'close' і 'time')
+            df_raw = loader.parse_combined_data(raw_data)
 
-            if df_synced is not None:
-                # Обробка ознак (is_training=False використовує існуючий scaler.pkl)
-                df_features = processor.process(df_synced, is_training=False)
+            if df_raw is not None and not df_raw.empty:
+                # Зберігаємо ціну/час для стратегії (до того як процесор їх видалить)
+                curr_price = float(df_raw['close'].iloc[-1])
+                curr_time = pd.to_datetime(df_raw['time'].iloc[-1])
 
-                # Дані останньої свічки
-                last_row = df_features.tail(1)
-                curr_time = last_row['time'].iloc[0]
-                curr_price = last_row['close'].iloc[0]
+                # 3. Обробка ознак (RSI, EMA, dist_m1_m5)
+                df_features = processor.process(df_raw, is_training=False)
 
-                # Крок А: Перевірка та закриття старих угод (через 20 хв)
+                # Перевірка на "холодний старт" (потрібно > 50 свічок для EMA)
+                if df_features.empty:
+                    print(f"⏳ Накопичення історії: {len(df_raw)}/50 свічок...", end='\r')
+                    continue
+
+                # 4. Перевірка відкритих угод (Stop Loss або Time-out)
                 accountant.check_pending(curr_time, curr_price)
 
-                # Крок Б: Прогноз для поточної ситуації
-                X = last_row.drop(columns=['time'])  # Таргету в Live немає
-                prob_up = model.predict_proba(X)[0, 1]
-                threshold = config['trading']['threshold']
+                # 5. Прогноз
+                last_row = df_features.tail(1)
+                X = last_row.drop(columns=['time', 'target'], errors='ignore')
 
-                # Крок В: Прийняття рішення про вхід
+                # Ймовірність росту (клас 1)
+                prob_up = model.predict_proba(X)[0, 1]
+
+                # --- HEARTBEAT: Вивід стану в консоль для кожної свічки ---
+                print(f"💓 {curr_time.strftime('%H:%M:%S')} | Price: {curr_price:.5f} | Prob Up: {prob_up:.4f}")
+
+                # 6. Логіка входу
                 if prob_up > threshold:
                     accountant.open_trade(curr_time, curr_price, 'BUY', prob_up)
+                    logger.info(f"🔥 BUY SIGNAL! Prob: {prob_up:.4f}")
+
                 elif prob_up < (1 - threshold):
                     accountant.open_trade(curr_time, curr_price, 'SELL', 1 - prob_up)
-                else:
-                    # Просто логуємо стан очікування (опціонально)
-                    logger.debug(f"WAIT | Prob: {prob_up:.2f} | Time: {curr_time}")
+                    logger.info(f"🔥 SELL SIGNAL! Prob: {1 - prob_up:.4f}")
 
         except KeyboardInterrupt:
-            logger.info("Зупинка бота користувачем. До зустрічі!")
+            logger.info("Бот зупинений.")
             break
         except Exception as e:
-            logger.error(f"Помилка в основному циклі: {e}")
+            logger.error(f"Помилка в циклі: {e}")
 
 
 if __name__ == "__main__":

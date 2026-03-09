@@ -42,3 +42,4 @@ paths:
   data_dir: "./data"
   log_dir: "./logs"
   models_dir: "./models"
+  data_path: "./data/EURUSD_ml_ready.parquet"
