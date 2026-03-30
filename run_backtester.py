@@ -3,91 +3,108 @@ import joblib
 import logging
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import os
 from src.processor import FeatureEngineer
-from src.strategy import MLStrategy
-from src.backtester import VectorizedBacktester
+from src.strategy import MLStrategy, VirtualAccountant
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+    # 1. Завантаження конфігурації
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
+    # 2. Завантаження моделі та даних
     try:
         model = joblib.load(f"{config['paths']['models_dir']}/xgb_baseline.pkl")
-        df_raw = pd.read_parquet(f"data/{config['trading']['symbol']}_ml_ready.parquet")
+        # Використовуємо шлях з конфігу
+        df_raw = pd.read_parquet(config['paths']['data_path'])
+        logging.info(f"Завантажено дані: {len(df_raw)} рядків")
     except Exception as e:
         logging.error(f"Помилка завантаження: {e}")
         return
 
+    # 3. Обробка фіч
     processor = FeatureEngineer(config)
     df_features = processor.process(df_raw, is_training=False)
 
-    df_prices = df_raw[df_raw['time'].isin(df_features['time'])].copy()
+    # Синхронізація цін з фічами (щоб індекси збігалися)
+    df_test = df_raw[df_raw['time'].isin(df_features['time'])].copy().reset_index(drop=True)
+    df_features = df_features.reset_index(drop=True)
 
-    split_time = df_features['time'].iloc[int(len(df_features) * (1 - config['model']['test_size']))]
-    test_features = df_features[df_features['time'] >= split_time].copy()
-    test_prices = df_prices[df_prices['time'] >= split_time].copy()
+    # 4. Виділення тестової вибірки (Walk-Forward)
+    split_idx = int(len(df_features) * (1 - config['model']['test_size']))
+    test_features = df_features.iloc[split_idx:].copy().reset_index(drop=True)
+    test_prices = df_test.iloc[split_idx:].copy().reset_index(drop=True)
 
-    if len(test_features) != len(test_prices):
-        logging.error(f"Розмір features ({len(test_features)}) не збігається з prices ({len(test_prices)}).")
-        return
-
+    # 5. Генерація сигналів
     strategy = MLStrategy(config)
     signals, probs = strategy.generate_signals(test_features, model)
 
-    # =============================================
-    # 🔍 ДІАГНОСТИКА
-    # =============================================
+    # 6. Ініціалізація "Бухгалтера" (Емуляція торгівлі)
+    accountant = VirtualAccountant(config)
+
+    print("\n🚀 Початок симуляції...")
+
+    # 1. Створюємо порожній список для результатів перед циклом
+    trade_results = []
+
+    # 2. Передаємо цей список у наш бухгалтер (Accountant)
+    # Або просто збираємо результати після закриття
+
+    print("\n🚀 Початок симуляції...")
+
+    initial_balance = accountant.balance  # Запам'ятовуємо старт
+
+    # Головний цикл: проходимо по кожній свічці
+    for i in range(len(test_prices)):
+        prev_balance = accountant.balance  # Баланс до перевірки угод
+
+        current_price = test_prices.iloc[i]['close']
+        current_vol = test_features.iloc[i]['volatility']
+
+        accountant.check_pending(i, current_price)
+
+        # Якщо баланс змінився — значить угода закрилася
+        if accountant.balance != prev_balance:
+            trade_results.append(accountant.balance - prev_balance)
+
+        # Логіка відкриття (без змін)
+        sig = signals[i]
+        if sig != 0:
+            accountant.open_trade(i, current_price, 'BUY' if sig == 1 else 'SELL', probs[i], current_vol)
+
+    # 7. Фінальні результати
     print("\n" + "=" * 45)
-    print("🔍 ДІАГНОСТИКА МОДЕЛІ")
+    print(f"💰 РЕЗУЛЬТАТИ СИМУЛЯЦІЇ (MacBook Logic)")
     print("=" * 45)
-    print(f"  Середня prob:       {probs.mean():.4f}")
-    print(f"  Медіана prob:       {np.median(probs):.4f}")
-    print(f"  Мін / Макс prob:    {probs.min():.4f} / {probs.max():.4f}")
-    print(f"  Сигналів BUY:       {(signals == 1).sum()}")
-    print(f"  Сигналів SELL:      {(signals == -1).sum()}")
-    print(f"  Сигналів WAIT:      {(signals == 0).sum()}")
-    print(f"  Всього свічок:      {len(signals)}")
+    print(f"  Фінальний баланс : ${accountant.balance:.2f}")
+    print(f"  Початковий баланс: ${config['backtest']['initial_balance']}")
+    print(f"  Чистий прибуток  : ${accountant.balance - config['backtest']['initial_balance']:.2f}")
     print("=" * 45)
 
-    # Топ фічі
-    feature_cols = test_features.drop(columns=['time', 'target'], errors='ignore').columns
+    # Діагностика фіч (як у тебе було)
+    print("\n🏆 ТОП-5 ФІЧ МОДЕЛІ:")
     importances = pd.DataFrame({
-        'feature': feature_cols,
+        'feature': test_features.drop(columns=['time', 'target'], errors='ignore').columns,
         'importance': model.feature_importances_
     }).sort_values('importance', ascending=False)
-    print("\n🏆 ТОП-7 ФІЧ:")
-    print(importances.head(7).to_string(index=False))
-    print("=" * 45)
-
-    # Графік розподілу ймовірностей
-    import os
-    os.makedirs("logs", exist_ok=True)
-    plt.figure(figsize=(10, 4))
-    plt.hist(probs, bins=50, color='steelblue', edgecolor='white')
-    plt.axvline(config['trading']['threshold'], color='red',
-                linestyle='--', label=f"Threshold {config['trading']['threshold']}")
-    plt.axvline(1 - config['trading']['threshold'], color='orange',
-                linestyle='--', label=f"1-Threshold {1 - config['trading']['threshold']}")
-    plt.title("Розподіл ймовірностей моделі (тестова вибірка)")
-    plt.xlabel("Probability UP")
-    plt.ylabel("Count")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("logs/prob_distribution.png")
-    print("\n📊 Графік збережено: logs/prob_distribution.png")
-    # =============================================
-
-    backtester = VectorizedBacktester(config)
-    metrics, results = backtester.run(test_prices.reset_index(drop=True), signals)
+    print(importances.head(5).to_string(index=False))
 
     print("\n" + "=" * 45)
-    print(f"💰 РЕЗУЛЬТАТИ БЕКТЕСТУ (Threshold: {config['trading']['threshold']})")
+    print(f"💰 РЕЗУЛЬТАТИ СИМУЛЯЦІЇ")
     print("=" * 45)
-    for k, v in metrics.items():
-        print(f"  {k:20}: {v}")
+
+    wins = [r for r in trade_results if r > 0]
+    losses = [abs(r) for r in trade_results if r < 0]
+
+    pf = sum(wins) / sum(losses) if sum(losses) > 0 else 0
+
+    print(f"  Фінальний баланс : ${accountant.balance:.2f}")
+    print(f"  Кількість угод   : {len(trade_results)}")
+    print(f"  Win Rate         : {len(wins) / len(trade_results) * 100:.1f}%" if trade_results else "0%")
+    print(f"  Profit Factor    : {pf:.2f}")
     print("=" * 45)
 
 

@@ -88,8 +88,17 @@ def main():
             accountant.check_pending(curr_time, curr_price)
 
             # 5. Прогноз на останній свічці
-            X = df_features.tail(1).drop(columns=['time', 'target'], errors='ignore')
+            # 1. Отримуємо список фіч у правильному порядку прямо з "мізків" моделі
+            expected_features = model.get_booster().feature_names
+
+            # 2. Беремо останній рядок і вибираємо колонки СУВОРО за списком моделі
+            X = df_features[expected_features].tail(1)
+
+            # 3. Тепер predict_proba спрацює без помилок
             prob_up = model.predict_proba(X)[0, 1]
+
+            # Для діагностики можна вивести в лог:
+            logging.info(f"📊 Ймовірність UP: {prob_up:.4f}")
 
             print(
                 f"💓 {curr_time.strftime('%H:%M:%S')} | "

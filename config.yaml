@@ -16,30 +16,36 @@ mt5:
 
 trading:
   symbol: "EURUSD"
-  timeframes: ["M1", "M5"]
-  horizon: 60           # Кількість свічок для прогнозу (MVP 3)
-  history_bars: 50000
-  risk_per_trade: 0.01
-  threshold: 0.65       # Поріг впевненості моделі для входу в угоду
+  # 🚀 КЛЮЧОВІ ПАРАМЕТРИ ДЛЯ SHIFT
+  target_minutes: 240      # Модель завжди прогнозує на 20 хвилин вперед
+  timeframe_minutes: 5    # Вкажи 5, якщо файл даних M5
 
-# Налаштування навчання (MVP 4 & 6)
+  # Асиметричні пороги (якщо SELL сильніший за BUY)
+  threshold_buy: 0.60
+  threshold_sell: 0.62
+
+  risk_per_trade: 0.01    # 1% ризику на угоду
+  horizon: 20             # Дефолтний горизонт у барах для M1
+
+  max_volatility: 0.0005  # 🚀 Фільтр: не входимо, якщо волатильність вища за цю
+  use_breakeven: true     # 🛡 Вмикаємо захист
+  be_threshold_pct: 0.5
+
 model:
   type: "xgboost"
-  n_estimators: 200     # Кількість дерев
-  max_depth: 6         # Глибина дерева
-  learning_rate: 0.03   # Швидкість навчання
-  test_size: 0.2        # 20% даних на тест (Walk-Forward)
+  n_estimators: 150       # Трохи менше дерев для кращої генералізації
+  max_depth: 4            # 🚀 Глибина 4 — ідеально, щоб бачити патерни Price Action
+  learning_rate: 0.05
+  test_size: 0.2
 
-# Параметри симулятора (MVP 5)
 backtest:
-  spread: 0.00012       # 10 пунктів (середній для EURUSD)
-  commission: 0.0       # Комісія брокера за лот
-  sl_points: 150        # Аварійний Stop Loss (у пунктах)
-  tp_points: 0
-  initial_balance: 1000 # Початковий депозит для розрахунку просадки
+  initial_balance: 1000
+  spread: 0.00012         # 1.2 пункти (реалістично)
+  sl_points: 150          # 10 пунктів (співвідношення 1.25 до 1)
+  tp_points: 80         # 8 пунктів (швидкий тейк, як на Mac)
 
 paths:
   data_dir: "./data"
   log_dir: "./logs"
   models_dir: "./models"
-  data_path: "./data/EURUSD_ml_ready.parquet"
+  data_path: "./data/eurusd_m5.parquet"

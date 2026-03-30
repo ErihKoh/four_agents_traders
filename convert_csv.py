@@ -2,8 +2,8 @@ import pandas as pd
 import os
 
 
-INPUT_FILE = "data/EURUSD_M1_202408010000_202603091943.csv"
-OUTPUT_FILE = "data/EURUSD_ml_ready.parquet"
+INPUT_FILE = "data/EURUSD_M5_202408010000_202603091940.csv"
+OUTPUT_FILE = "data/eurusd_m5.parquet"
 
 
 def main():

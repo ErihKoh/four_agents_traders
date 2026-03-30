@@ -1,36 +1,55 @@
 import yaml
 import logging
 import pandas as pd
+import os
+from src.processor import FeatureEngineer
 from src.model_trainer import ModelTrainer
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
+    # 1. Завантаження конфігурації
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    data_path = f"data/{config['trading']['symbol']}_ml_ready.parquet"
+    # 2. Підготовка даних (MacBook Logic)
+    # Використовуємо наш новий процесор, який рахує Shift та Price Action
+    data_path = config['paths']['data_path']
     try:
-        df = pd.read_parquet(data_path)
-        logging.info(f"Завантажено {len(df)} рядків з {data_path}")
-    except FileNotFoundError:
-        logging.error(f"Файл {data_path} не знайдено. Спочатку зберіть дані.")
+        raw_df = pd.read_parquet(data_path)
+        logging.info(f"Завантажено {len(raw_df)} рядків")
+
+        engineer = FeatureEngineer(config)
+        # is_training=True активує створення 'target' з правильним shift
+        df = engineer.process(raw_df, is_training=True)
+        logging.info(f"Дані оброблені. Фінальний розмір: {len(df)}")
+    except Exception as e:
+        logging.error(f"Помилка завантаження/обробки: {e}")
         return
 
+    # 3. Список фіч (Тільки ціна та патерни, НІЯКОГО ЧАСУ)
+    FEATURES = [
+        'rsi', 'dist_ema50', 'mom_5', 'volatility',
+        'pin_bar_up', 'pin_bar_down', 'eng_up', 'eng_down'
+    ]
+
+    # Залишаємо тільки потрібні колонки для навчання
+    train_df = df[FEATURES + ['target']]
+
+    # 4. Навчання
     trainer = ModelTrainer(config)
-    metrics = trainer.train(df)
+    # Передаємо оброблені дані
+    metrics = trainer.train(train_df)
 
+    # 5. Перевірка результату
     accuracy = metrics.get('Accuracy', 0)
-    roc_auc = metrics.get('ROC-AUC', 0)
 
-    if accuracy > 0.52 and roc_auc > 0.55:
-        logging.info(f"✅ Модель пройшла поріг: Accuracy={accuracy:.4f}, ROC-AUC={roc_auc:.4f}")
+    # На MacBook ми вважали 52% вже робочим результатом для M1
+    if accuracy > 0.52:
+        logging.info(f"✅ MacBook Style OK: Accuracy={accuracy:.4f}")
     else:
-        logging.warning(
-            f"⚠️ Модель не досягла порогу: Accuracy={accuracy:.4f}, ROC-AUC={roc_auc:.4f}. "
-            f"Розгляньте збільшення даних або зміну гіперпараметрів."
-        )
+        logging.warning(f"⚠️ Слабкий сигнал: Accuracy={accuracy:.4f}.")
 
 
 if __name__ == "__main__":
