@@ -2,18 +2,17 @@ import yaml
 import logging
 import joblib
 import os
+import time
 import pandas as pd
 from src.connector import MT5Connector
 from src.data_loader import DataPipeline
 from src.processor import FeatureEngineer
-from src.strategy import MLStrategy, VirtualAccountant
+from src.strategy import VirtualAccountant
 
 
 def setup_logging(config):
-    """Налаштування логів: тех-логи та сигнали."""
     log_dir = config['paths']['log_dir']
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    os.makedirs(log_dir, exist_ok=True)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
@@ -34,14 +33,12 @@ def setup_logging(config):
     signal_logger.addHandler(sig_handler)
     signal_logger.setLevel(logging.INFO)
 
-    return signal_logger
-
 
 def main():
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    sig_log = setup_logging(config)
+    setup_logging(config)
     logger = logging.getLogger("Bot.Live")
 
     try:
@@ -54,63 +51,67 @@ def main():
         accountant = VirtualAccountant(config)
 
         threshold = config['trading'].get('threshold', 0.58)
-        logger.info(f"🤖 Бот готовий. Поріг: {threshold} | Баланс: ${accountant.balance}")
+        logger.info(f"🤖 Бот готовий. Поріг: {threshold} | Баланс: ${accountant.balance:.2f}")
     except Exception as e:
         logger.error(f"Помилка ініціалізації: {e}")
         return
 
-    logger.info("📡 Чекаю на дані від MT5...")
+    logger.info("📡 Очікування даних від MT5...")
 
     while True:
         try:
-            # 1. Отримання пакету даних
+            # 1. Отримання пакету
             raw_data = conn.listen_for_data()
             if not raw_data:
+                time.sleep(1)
                 continue
 
-            # 2. Парсинг (тут ще є 'close' і 'time')
+            # 2. Парсинг
             df_raw = loader.parse_combined_data(raw_data)
+            if df_raw is None or df_raw.empty:
+                time.sleep(1)
+                continue
 
-            if df_raw is not None and not df_raw.empty:
-                # Зберігаємо ціну/час для стратегії (до того як процесор їх видалить)
-                curr_price = float(df_raw['close'].iloc[-1])
-                curr_time = pd.to_datetime(df_raw['time'].iloc[-1])
+            # Зберігаємо ціну/час ДО обробки процесором
+            curr_price = float(df_raw['close'].iloc[-1])
+            curr_time = pd.to_datetime(df_raw['time'].iloc[-1])
 
-                # 3. Обробка ознак (RSI, EMA, dist_m1_m5)
-                df_features = processor.process(df_raw, is_training=False)
+            # 3. Обробка фіч — тільки останні 100 свічок для інференсу
+            df_features = processor.process(df_raw.tail(100), is_training=False)
 
-                # Перевірка на "холодний старт" (потрібно > 50 свічок для EMA)
-                if df_features.empty:
-                    print(f"⏳ Накопичення історії: {len(df_raw)}/50 свічок...", end='\r')
-                    continue
+            if df_features.empty:
+                print(f"⏳ Накопичення історії: {len(df_raw)}/100 свічок...", end='\r')
+                time.sleep(1)
+                continue
 
-                # 4. Перевірка відкритих угод (Stop Loss або Time-out)
-                accountant.check_pending(curr_time, curr_price)
+            # 4. Перевірка відкритих угод
+            accountant.check_pending(curr_time, curr_price)
 
-                # 5. Прогноз
-                last_row = df_features.tail(1)
-                X = last_row.drop(columns=['time', 'target'], errors='ignore')
+            # 5. Прогноз на останній свічці
+            X = df_features.tail(1).drop(columns=['time', 'target'], errors='ignore')
+            prob_up = model.predict_proba(X)[0, 1]
 
-                # Ймовірність росту (клас 1)
-                prob_up = model.predict_proba(X)[0, 1]
+            print(
+                f"💓 {curr_time.strftime('%H:%M:%S')} | "
+                f"Price: {curr_price:.5f} | "
+                f"Prob Up: {prob_up:.4f} | "
+                f"Balance: ${accountant.balance:.2f}"
+            )
 
-                # --- HEARTBEAT: Вивід стану в консоль для кожної свічки ---
-                print(f"💓 {curr_time.strftime('%H:%M:%S')} | Price: {curr_price:.5f} | Prob Up: {prob_up:.4f}")
-
-                # 6. Логіка входу
-                if prob_up > threshold:
-                    accountant.open_trade(curr_time, curr_price, 'BUY', prob_up)
-                    logger.info(f"🔥 BUY SIGNAL! Prob: {prob_up:.4f}")
-
-                elif prob_up < (1 - threshold):
-                    accountant.open_trade(curr_time, curr_price, 'SELL', 1 - prob_up)
-                    logger.info(f"🔥 SELL SIGNAL! Prob: {1 - prob_up:.4f}")
+            # 6. Логіка входу
+            if prob_up > threshold:
+                accountant.open_trade(curr_time, curr_price, 'BUY', prob_up)
+                logger.info(f"🔥 BUY SIGNAL | Prob: {prob_up:.4f}")
+            elif prob_up < (1 - threshold):
+                accountant.open_trade(curr_time, curr_price, 'SELL', 1 - prob_up)
+                logger.info(f"🔥 SELL SIGNAL | Prob: {1 - prob_up:.4f}")
 
         except KeyboardInterrupt:
-            logger.info("Бот зупинений.")
+            logger.info("⛔ Бот зупинений користувачем.")
             break
         except Exception as e:
-            logger.error(f"Помилка в циклі: {e}")
+            logger.error(f"Помилка в циклі: {e}", exc_info=True)
+            time.sleep(2)
 
 
 if __name__ == "__main__":

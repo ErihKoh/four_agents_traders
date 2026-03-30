@@ -17,16 +17,16 @@ mt5:
 trading:
   symbol: "EURUSD"
   timeframes: ["M1", "M5"]
-  horizon: 20           # Кількість свічок для прогнозу (MVP 3)
+  horizon: 60           # Кількість свічок для прогнозу (MVP 3)
   history_bars: 50000
   risk_per_trade: 0.01
-  threshold: 0.58       # Поріг впевненості моделі для входу в угоду
+  threshold: 0.65       # Поріг впевненості моделі для входу в угоду
 
 # Налаштування навчання (MVP 4 & 6)
 model:
   type: "xgboost"
   n_estimators: 200     # Кількість дерев
-  max_depth: 5          # Глибина дерева
+  max_depth: 6         # Глибина дерева
   learning_rate: 0.03   # Швидкість навчання
   test_size: 0.2        # 20% даних на тест (Walk-Forward)
 

@@ -35,3 +35,5 @@
 2026-03-09 15:36:43,892 | ❌ LOSS (STOP-LOSS) | Pips: -260.8 | Profit: $-11.39 | Bal: $862.21
 2026-03-09 15:36:43,893 | 🚀 OPEN SELL | Price: 0.44859 | SL: 150.0 pts
 2026-03-09 17:40:23,177 | 🚀 OPEN SELL | Price: 1.15883 | Prob: 0.60 | SL: 150.0 pts
+2026-03-09 18:00:01,193 | ❌ LOSS (TIMEOUT) | Pips: -46.0 | Profit: $-3.07 | Bal: $996.93
+2026-03-09 18:00:03,182 | 🚀 OPEN SELL | Price: 1.15923 | Prob: 0.61 | SL: 150.0 pts
